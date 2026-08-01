@@ -928,19 +928,22 @@ class DTensorRedistributePlanner:
         # Case 6. Replicate() -> Partial(), local math op, applies to:
         #   R* -> P[..., x]
         #
-        # (TODO) Case 7. _StridedShard(a) -> Shard(b), use all-to-all (a2a), applies to:
+        # Case 7. Shard() -> Partial("sum"), local zero-fill, applies to:
+        #   S(a)[..., x] -> P[..., x]
+        #
+        # (TODO) Case 8. _StridedShard(a) -> Shard(b), use all-to-all (a2a), applies to:
         #   SS(a)[..., x] -> S(b)[..., x]
         #
-        # Case 8. _StridedShard() -> Replicate(), use all-gather, applies to:
+        # Case 9. _StridedShard() -> Replicate(), use all-gather, applies to:
         #   SS(a)[..., x, y, z] -> SS(a)[..., x, y]
         #
-        # (TODO) Case 9. Shard(a) -> _StridedShard(b), use all-to-all (a2a), applies to:
+        # (TODO) Case 10. Shard(a) -> _StridedShard(b), use all-to-all (a2a), applies to:
         #   S(a)[..., x] -> SS(b)[..., x]
         #
-        # (TODO) Case 10. Partial() -> _StridedShard(), use reduce-scatter, applies to:
+        # (TODO) Case 11. Partial() -> _StridedShard(), use reduce-scatter, applies to:
         #   P[..., x, y] -> P[..., x]SS(a)[..., y] or P[..., x, y] -> P[..., y]SS(a)[..., x]
         #
-        # Case 11. Replicate() -> _StridedShard(), use chunk, applies to:
+        # Case 12. Replicate() -> _StridedShard(), use chunk, applies to:
         #   R* -> SS(a)[..., x]
         #
         # NB: Regarding `_StridedShard``, we only allow changing `Replicate` into
@@ -1103,13 +1106,36 @@ class DTensorRedistributePlanner:
                     dist_state,
                 )
 
+        ######################################################################
+        # handle case 7: Shard() -> Partial("sum")
+        if "sum" in self.partial_reduce_ops_in_target:
+            for entry in tensor_mesh_dim_tuple:
+                src_tensor_dim = entry.tensor_dim
+                src_mesh_dim = tensor_mesh_dim_dict[src_tensor_dim][-1]
+                if not isinstance(placements[src_mesh_dim], Shard):
+                    continue
+                move_mesh_dim = tensor_mesh_dim_dict[src_tensor_dim].pop()
+                new_placements = list(placements)
+                new_placements[move_mesh_dim] = Partial("sum")
+                dist_state = self.DistState(
+                    self._to_tuple(new_placements),
+                    DTensorRedistributePlanner._dict_to_ShardOrder(
+                        tensor_mesh_dim_dict
+                    ),
+                )
+                tensor_mesh_dim_dict[src_tensor_dim].append(move_mesh_dim)
+                all_next_state[dist_state] = self.cost_function(
+                    cur_dist_state,
+                    dist_state,
+                )
+
         # Additional cases handling for _StridedShard
 
         ######################################################################
-        # TODO(zpcore): handle case 7: _StridedShard() -> Shard() on the same dim
+        # TODO(zpcore): handle case 8: _StridedShard() -> Shard() on the same dim
 
         ######################################################################
-        # handle case 8: _StridedShard() -> Replicate()
+        # handle case 9: _StridedShard() -> Replicate()
         for entry in tensor_mesh_dim_tuple:
             src_tensor_dim = entry.tensor_dim
             src_mesh_dim = tensor_mesh_dim_dict[src_tensor_dim][-1]
@@ -1133,13 +1159,13 @@ class DTensorRedistributePlanner:
             return all_next_state
 
         ######################################################################
-        # TODO(zpcore): handle case 9: Shard() -> _StridedShard()
+        # TODO(zpcore): handle case 10: Shard() -> _StridedShard()
 
         ######################################################################
-        # TODO(zpcore): handle case 10: Partial() -> _StridedShard()
+        # TODO(zpcore): handle case 11: Partial() -> _StridedShard()
 
         ######################################################################
-        # handle case 11: Replicate() -> _StridedShard()
+        # handle case 12: Replicate() -> _StridedShard()
         for mesh_dim, placement in enumerate(placements):
             if not isinstance(placement, Replicate):
                 continue
@@ -1715,8 +1741,19 @@ def redistribute_local_tensor(
                         local_tensor, mesh_to_use, i
                     )
                 elif _is_shard_like(current):
-                    raise RuntimeError(
-                        f"redistribute from {current} to {target} not supported yet"
+                    if (
+                        not isinstance(current, Shard)
+                        or type(target) is not Partial
+                        or target.reduce_op != "sum"
+                    ):
+                        raise RuntimeError(
+                            f"redistribute from {current} to {target} not supported yet"
+                        )
+                    new_local_tensor = current._to_partial_tensor(
+                        local_tensor,
+                        mesh_to_use,
+                        i,
+                        transform_info.logical_shape,
                     )
                 else:
                     if current != target:

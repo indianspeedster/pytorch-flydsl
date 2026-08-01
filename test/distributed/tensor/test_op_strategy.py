@@ -206,7 +206,7 @@ class TestCostModel(DTensorOpTestBase):
         self.assertTrue(allreduce_cost + 1 < allgather_cost + reduce_scatter_cost)
         # shard to partial
         cost = redistribute_cost(shard_spec, partial_spec)
-        self.assertEqual(cost, float("inf"))
+        self.assertEqual(cost, 0)
 
     def test_redistribute_cost_strided_shard(self):
         """_StridedShard specs get inf cost (shard_order is None bail-out)."""
