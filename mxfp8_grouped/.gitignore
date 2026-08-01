@@ -1,0 +1,3 @@
+# FlyDSL drops layout-debug dumps into the cwd of whatever runs a kernel.
+data_Tensor_*.txt
+__pycache__/

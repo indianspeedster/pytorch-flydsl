@@ -17,3 +17,9 @@ psutil
 spin
 sympy>=1.13.3
 wheel
+
+# FlyDSL inductor GEMM backend (ROCm gfx950). Pinned to a dev build because
+# released versions lack fx.rocdl.get_buffer_rsrc, which
+# torch/_inductor/kernel/vendored_templates/flydsl/kernels/gemm_gfx950.py needs,
+# and fx.rocdl.cdna4.MFMA_Scale, used by the MXFP8 grouped GEMM.
+flydsl==0.3.0.dev765
